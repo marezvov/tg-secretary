@@ -13,8 +13,9 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from aiogram import Bot, F, Router
-from aiogram.filters import Command
+from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
     CallbackQuery,
     InlineKeyboardButton,
@@ -86,6 +87,10 @@ def db() -> Database:
     return runtime.database
 
 
+class InboxStates(StatesGroup):
+    reply = State()
+
+
 # --------------------------------------------------------------------------- buffer
 @dataclass
 class InboxPart:
@@ -100,12 +105,15 @@ class InboxPart:
     file_size: int = 0
     duration: int = 0
     media_group_id: str | None = None
+    reply_to_text: str = ""
+    target_task_id: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {"kind": self.kind}
         for key in (
             "message_id", "text", "caption", "file_id", "file_name",
             "mime_type", "file_size", "duration", "media_group_id",
+            "reply_to_text", "target_task_id",
         ):
             value = getattr(self, key)
             if value not in (None, "", 0):
@@ -126,6 +134,8 @@ class InboxPart:
             file_size=int(data.get("file_size") or 0),
             duration=int(data.get("duration") or 0),
             media_group_id=data.get("media_group_id"),
+            reply_to_text=str(data.get("reply_to_text") or ""),
+            target_task_id=int(data["target_task_id"]) if data.get("target_task_id") else None,
         )
 
 
@@ -221,18 +231,47 @@ async def cmd_inbox(message: Message, state: FSMContext) -> None:
     await send_long(message.bot, message.chat.id, text, keyboard)
 
 
-@router.message(F.text & ~F.text.startswith("/"))
-async def on_text(message: Message) -> None:
+async def _extract_reply_info(message: Message, state: FSMContext) -> tuple[str, int | None]:
+    reply_to_text = ""
+    target_task_id = None
+    try:
+        data = await state.get_data()
+        reply_to_text = str(data.get("reply_context") or "")
+        target_task_id = data.get("target_task_id")
+        current_state = await state.get_state()
+        if current_state == InboxStates.reply:
+            await state.clear()
+    except Exception:
+        pass
+
+    if message.reply_to_message:
+        quoted = (message.reply_to_message.text or message.reply_to_message.caption or "").strip()
+        if quoted:
+            prefix = f"Ответ на сообщение: «{quoted[:300]}»"
+            reply_to_text = f"{prefix}\n{reply_to_text}".strip()
+    return reply_to_text, target_task_id
+
+
+@router.message(StateFilter(None, InboxStates.reply), F.text & ~F.text.startswith("/"))
+async def on_text(message: Message, state: FSMContext) -> None:
     text = (message.text or "").strip()
     if not text:
         return
-    part = InboxPart(kind="text", text=text, message_id=message.message_id)
+    reply_to_text, target_task_id = await _extract_reply_info(message, state)
+    part = InboxPart(
+        kind="text",
+        text=text,
+        message_id=message.message_id,
+        reply_to_text=reply_to_text,
+        target_task_id=target_task_id,
+    )
     await _capture_safe(message, part)
 
 
-@router.message(F.voice)
-async def on_voice(message: Message) -> None:
+@router.message(StateFilter(None, InboxStates.reply), F.voice)
+async def on_voice(message: Message, state: FSMContext) -> None:
     voice = message.voice
+    reply_to_text, target_task_id = await _extract_reply_info(message, state)
     part = InboxPart(
         kind="voice",
         message_id=message.message_id,
@@ -242,13 +281,16 @@ async def on_voice(message: Message) -> None:
         file_size=voice.file_size or 0,
         duration=voice.duration or 0,
         media_group_id=message.media_group_id,
+        reply_to_text=reply_to_text,
+        target_task_id=target_task_id,
     )
     await _capture_safe(message, part)
 
 
-@router.message(F.photo)
-async def on_photo(message: Message) -> None:
+@router.message(StateFilter(None, InboxStates.reply), F.photo)
+async def on_photo(message: Message, state: FSMContext) -> None:
     photo = message.photo[-1]
+    reply_to_text, target_task_id = await _extract_reply_info(message, state)
     part = InboxPart(
         kind="photo",
         message_id=message.message_id,
@@ -256,13 +298,16 @@ async def on_photo(message: Message) -> None:
         file_id=photo.file_id,
         file_size=photo.file_size or 0,
         media_group_id=message.media_group_id,
+        reply_to_text=reply_to_text,
+        target_task_id=target_task_id,
     )
     await _capture_safe(message, part)
 
 
-@router.message(F.document)
-async def on_document(message: Message) -> None:
+@router.message(StateFilter(None, InboxStates.reply), F.document)
+async def on_document(message: Message, state: FSMContext) -> None:
     document = message.document
+    reply_to_text, target_task_id = await _extract_reply_info(message, state)
     part = InboxPart(
         kind="document",
         message_id=message.message_id,
@@ -272,6 +317,8 @@ async def on_document(message: Message) -> None:
         mime_type=document.mime_type or "",
         file_size=document.file_size or 0,
         media_group_id=message.media_group_id,
+        reply_to_text=reply_to_text,
+        target_task_id=target_task_id,
     )
     await _capture_safe(message, part)
 
@@ -395,6 +442,42 @@ async def _process_parts(bot: Bot, chat_id: int, parts: list[InboxPart]) -> bool
         if len(content) > MAX_PROMPT_CHARS:
             content = content[:MAX_PROMPT_CHARS] + "\n\n[... текст обрезан ...]"
 
+        active_tasks = await db().list_tasks(filter_name="active", limit=7)
+
+        dialog_snippets: list[str] = []
+        target_task_id: int | None = None
+        for part in parts:
+            if part.reply_to_text:
+                dialog_snippets.append(part.reply_to_text)
+            if part.target_task_id:
+                target_task_id = part.target_task_id
+
+        if target_task_id:
+            target_task = await db().get_task(target_task_id)
+            if target_task:
+                dl = f", дедлайн: {target_task['deadline_at']}" if target_task.get("deadline_at") else ""
+                dialog_snippets.append(
+                    f"Дополняемая задача [ID {target_task_id}]: «{target_task['title']}» ({target_task['category']}{dl})"
+                )
+
+        try:
+            recent_logs = await db().fetchall(
+                "SELECT raw_content FROM inbox_log WHERE status='processed' ORDER BY id DESC LIMIT 2"
+            )
+            for row in reversed(recent_logs):
+                try:
+                    payload = json.loads(row["raw_content"])
+                    for p in payload.get("parts", []):
+                        t = p.get("text") or p.get("caption")
+                        if t:
+                            dialog_snippets.append(f"Предыдущее сообщение пользователя: «{clip(t, 200)}»")
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        recent_dialog = "\n".join(dialog_snippets) if dialog_snippets else None
+
         result_items: list[InboxItem] = []
         summaries: list[str] = []
 
@@ -408,6 +491,8 @@ async def _process_parts(bot: Bot, chat_id: int, parts: list[InboxPart]) -> bool
                         photo_prompt(
                             now, tz_name, profile,
                             (caption or content)[:8000] or "(без подписи)",
+                            active_tasks=active_tasks,
+                            recent_dialog=recent_dialog,
                         ),
                         InboxResult,
                         max_tokens=1200,
@@ -431,7 +516,16 @@ async def _process_parts(bot: Bot, chat_id: int, parts: list[InboxPart]) -> bool
             try:
                 await reporter.step("llm", "🧠 Анализирую запрос через нейросеть, готовлю ответ...")
                 raw = await chat_json(
-                    [{"role": "user", "content": inbox_prompt(now, tz_name, profile, content)}],
+                    [
+                        {
+                            "role": "user",
+                            "content": inbox_prompt(
+                                now, tz_name, profile, content,
+                                active_tasks=active_tasks,
+                                recent_dialog=recent_dialog,
+                            ),
+                        }
+                    ],
                     InboxResult,
                     max_tokens=1200,
                 )
@@ -454,7 +548,9 @@ async def _process_parts(bot: Bot, chat_id: int, parts: list[InboxPart]) -> bool
 
         for item in result_items:
             try:
-                created_entry = await _apply_item(item, now, tz, source_url, warnings)
+                created_entry = await _apply_item(
+                    item, now, tz, source_url, warnings, target_task_id=target_task_id
+                )
                 if created_entry:
                     created.append(created_entry)
             except Exception as exc:  # noqa: BLE001 - keep other items
@@ -591,6 +687,7 @@ async def _apply_item(
     tz: Any,
     source_url: str | None,
     warnings: list[str],
+    target_task_id: int | None = None,
 ) -> dict[str, Any] | None:
     kind = item.type
     start = parse_datetime(item.start_dt, tz)
@@ -598,13 +695,46 @@ async def _apply_item(
     deadline = parse_datetime(item.deadline_at, tz)
     remind_at = parse_datetime(item.reminder_at, tz)
 
+    # Check if this item updates an existing task
+    update_task_id = item.task_id or target_task_id
+    if update_task_id and kind == "task":
+        existing = await db().get_task(update_task_id)
+        if existing is not None:
+            updates: dict[str, Any] = {}
+            if item.title and item.title != "Без названия" and item.title != existing["title"]:
+                updates["title"] = item.title
+            if item.category and item.category != existing["category"]:
+                updates["category"] = item.category
+            if item.energy and item.energy != existing["energy"]:
+                updates["energy"] = item.energy
+            if item.est_minutes and item.est_minutes != existing["est_minutes"]:
+                updates["est_minutes"] = item.est_minutes
+            if deadline:
+                updates["deadline_at"] = to_db(deadline)
+            if item.first_step and item.first_step != existing["first_step"]:
+                updates["first_step"] = item.first_step
+            if source_url or item.source_url or item.location_or_url:
+                updates["source_url"] = item.source_url or source_url or item.location_or_url
+            if updates:
+                await db().update_task(update_task_id, **updates)
+            if remind_at is not None:
+                await db().create_reminder(
+                    f"⏰ {existing['title']}", to_db(remind_at), task_id=update_task_id
+                )
+            return {"kind": "task", "id": update_task_id, "updated": True}
+
     if kind == "recurring_schedule":
         weekday = item.weekday
         start_time = parse_hhmm(item.start_time)
         end_time = parse_hhmm(item.end_time)
         if weekday is None or start_time is None or end_time is None:
-            warnings.append(f"📅 Не понял время регулярного занятия «{esc(item.title)}».")
-            return None
+            warnings.append(
+                f"📅 У регулярного дела «{esc(item.title)}» нет точного слота времени в расписании — сохранил как задачу под свободные окна."
+            )
+            first_step = item.first_step or "Выделить 30-60 минут в свободное окно и позаниматься."
+            return await _create_task(
+                item, now, deadline, remind_at, source_url, first_step=first_step
+            )
         if end_time <= start_time:
             end_time = (datetime.combine(now.date(), start_time) + timedelta(hours=1)).time()
         existing = await db().list_recurring(int(weekday))
@@ -752,11 +882,22 @@ async def _send_result(
     parts: list[InboxPart],
 ) -> None:
     if not created and not documents:
-        lines = ["🤷 <b>Разобрал, но полезных сущностей не нашёл.</b>"]
         if summary:
-            lines.extend(["", esc(summary)])
+            lines = [esc(summary)]
+        else:
+            lines = [
+                "💬 <b>Принято!</b>",
+                "",
+                "Если хочешь поставить задачу, напоминание или спросить о расписании — просто напиши.",
+            ]
     else:
-        lines = ["✅ <b>Разобрал входящее</b>"]
+        has_updated = any(entry.get("updated") for entry in created)
+        if has_updated:
+            lines = ["✅ <b>Обновил задачу:</b>"]
+        elif len(created) > 1:
+            lines = ["✅ <b>Зафиксировал:</b>"]
+        else:
+            lines = ["✅ <b>Готово:</b>"]
         if summary:
             lines.extend(["", esc(summary)])
 
@@ -774,7 +915,8 @@ async def _send_result(
                 continue
             task_number += 1
             task_entries.append((task_number, row_id))
-            block = f"<b>{task_number}.</b> " + format_task_compact(task, now)
+            status_tag = " <i>[обновлена]</i>" if entry.get("updated") else ""
+            block = f"<b>{task_number}.</b>{status_tag} " + format_task_compact(task, now)
             if task["first_step"]:
                 block += f"\n   🪜 {esc(task['first_step'])}"
             lines.extend(["", block])
@@ -877,17 +1019,67 @@ def _result_keyboard(
                 ),
             ]
         )
-    if tasks:
-        rows.append(
-            [InlineKeyboardButton(text="📋 Все задачи", callback_data="t:list:active:0")]
-        )
+
+    # Interactive Reply / Supplement button
+    reply_task_id = tasks[0][1] if tasks else 0
     rows.append(
         [
-            InlineKeyboardButton(text="📥 Inbox", callback_data="inbox:list:0"),
-            InlineKeyboardButton(text="🏠 Меню", callback_data="menu:main"),
+            InlineKeyboardButton(
+                text="💬 Ответить / Дополнить",
+                callback_data=f"inbox:reply:{reply_task_id}",
+            )
         ]
     )
+
+    bottom_row: list[InlineKeyboardButton] = []
+    if tasks:
+        bottom_row.append(InlineKeyboardButton(text="📋 Задачи", callback_data="t:list:active:0"))
+    bottom_row.append(InlineKeyboardButton(text="📥 Inbox", callback_data="inbox:list:0"))
+    bottom_row.append(InlineKeyboardButton(text="🏠 Меню", callback_data="menu:main"))
+    rows.append(bottom_row)
+
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@router.callback_query(F.data.startswith("inbox:reply:"))
+async def cb_inbox_reply(callback: CallbackQuery, state: FSMContext) -> None:
+    parts = callback.data.split(":")
+    raw_id = parts[2] if len(parts) > 2 else "0"
+    task_id = int(raw_id) if raw_id.isdigit() and int(raw_id) > 0 else None
+
+    task_context = ""
+    if task_id:
+        task = await db().get_task(task_id)
+        if task:
+            dl = f", дедлайн: {task['deadline_at']}" if task.get("deadline_at") else ""
+            task_context = f"Задача [ID {task_id}]: «{task['title']}»{dl}"
+
+    await state.set_state(InboxStates.reply)
+    await state.update_data(target_task_id=task_id, reply_context=task_context)
+    await callback.answer()
+
+    lines = ["💬 <b>Режим диалога и дополнения</b>", ""]
+    if task_context:
+        lines.append(f"📌 {esc(task_context)}\n")
+    lines.extend([
+        "Напиши текстом или отправь голосовое:",
+        "• Что дополнить или изменить (дедлайн, ссылку, примечание, оценку времени);",
+        "• Или задай вопрос секретарю по этой задаче / планам.",
+    ])
+    cancel_kb = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="✖️ Выйти из диалога", callback_data="inbox:reply:cancel")]]
+    )
+    await callback.message.answer("\n".join(lines), reply_markup=cancel_kb)
+
+
+@router.callback_query(F.data == "inbox:reply:cancel")
+async def cb_inbox_reply_cancel(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    await callback.answer("Диалог завершён")
+    try:
+        await callback.message.edit_text("✖️ Диалог завершён. Ты можешь отправлять любые сообщения как обычно.")
+    except Exception:
+        pass
 
 
 async def _send_failure(

@@ -728,6 +728,9 @@ def _task_detail_keyboard(task_id: int, status: str, filter_name: str, offset: i
                 InlineKeyboardButton(text="🗓 Перенести", callback_data=f"t:plan:{task_id}:{ctx}"),
                 InlineKeyboardButton(text="🗑 Удалить", callback_data=f"t:delask:{task_id}:{ctx}"),
             ],
+            [
+                InlineKeyboardButton(text="💬 Дополнить / обсудить", callback_data=f"inbox:reply:{task_id}"),
+            ],
         ]
     else:
         rows = [

@@ -41,6 +41,8 @@ class InboxItem(BaseModel):
     end_time: str | None = None
     source_url: str | None = None
     content: str | None = None
+    task_id: int | None = None
+    action: str = "create"
 
     @model_validator(mode="before")
     @classmethod
@@ -58,6 +60,7 @@ class InboxItem(BaseModel):
             "step": "first_step", "notes": "prep_notes", "первый_шаг": "first_step", "заметки": "prep_notes",
             "text": "content", "описание": "content", "текст": "content",
             "тип": "type", "категория": "category", "энергия": "energy", "минуты": "est_minutes",
+            "id": "task_id", "номер": "task_id", "действие": "action",
         }
         for source, target in aliases.items():
             if source in data and target not in data:
@@ -124,6 +127,16 @@ class InboxItem(BaseModel):
     @classmethod
     def _date_text(cls, value: Any) -> str | None:
         return _as_text(value)
+
+    @field_validator("task_id", mode="before")
+    @classmethod
+    def _task_id(cls, value: Any) -> int | None:
+        if value is None:
+            return None
+        if isinstance(value, int):
+            return value if value > 0 else None
+        match = re.search(r"\d+", str(value))
+        return int(match.group(0)) if match else None
 
     @field_validator("location_or_url", "first_step", "prep_notes", "source_url", "content", mode="before")
     @classmethod
