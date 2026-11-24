@@ -455,7 +455,7 @@ async def _process_parts(bot: Bot, chat_id: int, parts: list[InboxPart]) -> bool
         if target_task_id:
             target_task = await db().get_task(target_task_id)
             if target_task:
-                dl = f", дедлайн: {target_task['deadline_at']}" if target_task.get("deadline_at") else ""
+                dl = f", дедлайн: {target_task['deadline_at']}" if target_task["deadline_at"] else ""
                 dialog_snippets.append(
                     f"Дополняемая задача [ID {target_task_id}]: «{target_task['title']}» ({target_task['category']}{dl})"
                 )
@@ -1051,7 +1051,7 @@ async def cb_inbox_reply(callback: CallbackQuery, state: FSMContext) -> None:
     if task_id:
         task = await db().get_task(task_id)
         if task:
-            dl = f", дедлайн: {task['deadline_at']}" if task.get("deadline_at") else ""
+            dl = f", дедлайн: {task['deadline_at']}" if task["deadline_at"] else ""
             task_context = f"Задача [ID {task_id}]: «{task['title']}»{dl}"
 
     await state.set_state(InboxStates.reply)

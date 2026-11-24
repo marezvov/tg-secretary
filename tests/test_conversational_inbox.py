@@ -68,6 +68,26 @@ class TestConversationalInbox(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Пользователь спросил: «Где задача?»", prompt)
         self.assertIn("reply_summary", prompt)
 
+    async def test_inbox_prompt_with_real_sqlite_row(self):
+        """Must not raise AttributeError: 'sqlite3.Row' object has no attribute 'get'."""
+        task_id = await self.db.create_task(
+            title="Проект по промышленному программированию",
+            category="study",
+            deadline_at="2026-11-28 18:00",
+        )
+        tasks = await self.db.list_tasks("active")
+        self.assertEqual(len(tasks), 1)
+        now = datetime(2026, 11, 24, 18, 0)
+        prompt = inbox_prompt(
+            now=now,
+            tz_name="Europe/Moscow",
+            profile="",
+            content="Добавь задачу доделать проект",
+            active_tasks=tasks,
+        )
+        self.assertIn("Проект по промышленному программированию", prompt)
+        self.assertIn("2026-11-28 18:00", prompt)
+
     async def test_recurring_schedule_missing_time_fallback_to_task(self):
         """When user says 'каждый день до 29 ноября в свободное время', it must not be lost!"""
         now = datetime(2026, 11, 24, 14, 15)

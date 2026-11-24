@@ -37,7 +37,7 @@ def inbox_prompt(
     if active_tasks:
         lines = ["Список текущих активных задач владельца:"]
         for t in active_tasks[:6]:
-            dl = f", дедлайн: {t['deadline_at']}" if t.get("deadline_at") else ""
+            dl = f", дедлайн: {t['deadline_at']}" if t["deadline_at"] else ""
             lines.append(f"• [ID {t['id']}] «{t['title']}» ({t['category']}{dl})")
         tasks_info = "\n".join(lines) + "\n\n"
     else:
