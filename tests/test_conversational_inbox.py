@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 from app.config import settings
 from app.database import Database
-from app.handlers.inbox import InboxPart, _apply_item, _result_keyboard, _send_result
+from app.handlers.inbox import InboxPart, _apply_item, _dedupe_items, _result_keyboard, _send_result
 from app.prompts import inbox_prompt
 from app.schemas import InboxItem, InboxResult
 
@@ -184,6 +184,87 @@ class TestConversationalInbox(unittest.IsolatedAsyncioTestCase):
         reply_btn = next((b for b in all_buttons if "Ответить" in b.text or "Дополнить" in b.text), None)
         self.assertIsNotNone(reply_btn)
         self.assertEqual(reply_btn.callback_data, "inbox:reply:10")
+
+    async def test_recurring_schedule_auto_corrects_weekday_and_dedupes(self):
+        """Off-by-one weekdays in LLM output must be corrected from title and deduplicated."""
+        now = datetime(2026, 11, 24, 22, 10)
+        tz = await settings.timezone()
+        warnings: list[str] = []
+
+        # Simulate LLM using 1-based weekdays (Mon=1 .. Sat=6)
+        raw_items = [
+            InboxItem(type="recurring_schedule", title="Школа (Понедельник)", category="study", weekday=1, start_time="09:00", end_time="16:00"),
+            InboxItem(type="recurring_schedule", title="Школа (Вторник)", category="study", weekday=2, start_time="08:00", end_time="16:00"),
+            InboxItem(type="recurring_schedule", title="Школа (Среда)", category="study", weekday=None, start_time="08:00", end_time="15:00"),
+            InboxItem(type="recurring_schedule", title="Школа (Четверг)", category="study", weekday=4, start_time="09:00", end_time="16:00"),
+            InboxItem(type="recurring_schedule", title="Школа (Пятница)", category="study", weekday=5, start_time="09:00", end_time="16:00"),
+            InboxItem(type="recurring_schedule", title="Школа (Суббота)", category="study", weekday=6, start_time="09:00", end_time="14:00"),
+        ]
+
+        for idx, item in enumerate(raw_items):
+            entry = await _apply_item(item, now, tz, None, warnings)
+            self.assertIsNotNone(entry)
+            self.assertEqual(entry["kind"], "recurring")
+            slot = await self.db.get_recurring(entry["id"])
+            self.assertEqual(slot["weekday"], idx)
+
+        self.assertEqual(warnings, [])
+
+        # Re-submitting Monday with updated title and same time must update rather than duplicate
+        updated_item = InboxItem(
+            type="recurring_schedule",
+            title="Школа: Понедельник (7 уроков)",
+            category="study",
+            weekday=1,
+            start_time="09:00",
+            end_time="16:00",
+        )
+        entry_dup = await _apply_item(updated_item, now, tz, None, warnings)
+        self.assertIsNotNone(entry_dup)
+        monday_slots = await self.db.list_recurring(0)
+        self.assertEqual(len(monday_slots), 1)
+        self.assertEqual(monday_slots[0]["title"], "Школа: Понедельник (7 уроков)")
+
+    async def test_dedupe_items_keeps_identical_title_recurring_across_days_and_send_result_shows_day(self):
+        """When LLM labels all days identically as 'Школа', _dedupe_items must keep all days."""
+        items = [
+            InboxItem(type="recurring_schedule", title="Школа", weekday=0, start_time="09:00", end_time="16:00"),
+            InboxItem(type="recurring_schedule", title="Школа", weekday=1, start_time="08:00", end_time="16:00"),
+            InboxItem(type="recurring_schedule", title="Школа", weekday=3, start_time="09:00", end_time="16:00"),
+            InboxItem(type="recurring_schedule", title="Школа", weekday=4, start_time="09:00", end_time="16:00"),
+        ]
+        deduped = _dedupe_items(items)
+        self.assertEqual(len(deduped), 4)
+
+        now = datetime(2026, 11, 24, 22, 10)
+        tz = await settings.timezone()
+        warnings: list[str] = []
+        created = []
+        for item in deduped:
+            entry = await _apply_item(item, now, tz, None, warnings)
+            self.assertIsNotNone(entry)
+            created.append(entry)
+
+        bot = MagicMock()
+        bot.send_message = AsyncMock()
+        await _send_result(
+            bot=bot,
+            chat_id=12345,
+            created=created,
+            documents=[],
+            summary="Добавил школу в расписание.",
+            warnings=warnings,
+            errors=[],
+            now=now,
+            parts=[],
+        )
+        bot.send_message.assert_awaited_once()
+        args, kwargs = bot.send_message.call_args
+        call_text = kwargs.get("text") or (args[1] if len(args) > 1 else "")
+        self.assertIn("(Пн)", call_text)
+        self.assertIn("(Вт)", call_text)
+        self.assertIn("(Чт)", call_text)
+        self.assertIn("(Пт)", call_text)
 
 
 if __name__ == "__main__":

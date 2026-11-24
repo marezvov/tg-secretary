@@ -370,6 +370,40 @@ def normalize_weekday(value: Any) -> int | None:
     return WEEKDAY_ALIASES.get(text.replace(".", ""))
 
 
+_WEEKDAY_FULL_PATTERNS: list[tuple[re.Pattern[str], int]] = [
+    (re.compile(r"\b(?:понедельник\w*|monday)\b", re.IGNORECASE), 0),
+    (re.compile(r"\b(?:вторник\w*|tuesday)\b", re.IGNORECASE), 1),
+    (re.compile(r"\b(?:сред(?:а|у|ы|е|ой|ам|ами)|wednesday)\b", re.IGNORECASE), 2),
+    (re.compile(r"\b(?:четверг\w*|thursday)\b", re.IGNORECASE), 3),
+    (re.compile(r"\b(?:пятниц\w*|friday)\b", re.IGNORECASE), 4),
+    (re.compile(r"\b(?:суббот\w*|saturday)\b", re.IGNORECASE), 5),
+    (re.compile(r"\b(?:воскресен\w*|sunday)\b", re.IGNORECASE), 6),
+]
+_WEEKDAY_SHORT_PATTERNS: list[tuple[re.Pattern[str], int]] = [
+    (re.compile(r"\b(?:пн|mon)\b", re.IGNORECASE), 0),
+    (re.compile(r"\b(?:вт|tue)\b", re.IGNORECASE), 1),
+    (re.compile(r"\b(?:ср|wed)\b", re.IGNORECASE), 2),
+    (re.compile(r"\b(?:чт|thu)\b", re.IGNORECASE), 3),
+    (re.compile(r"\b(?:пт|fri)\b", re.IGNORECASE), 4),
+    (re.compile(r"\b(?:сб|sat)\b", re.IGNORECASE), 5),
+    (re.compile(r"\b(?:вс|sun)\b", re.IGNORECASE), 6),
+]
+
+
+def detect_weekday_in_text(text: str | None) -> int | None:
+    """Detect weekday index (0=Mon..6=Sun) mentioned in free-form text."""
+    source = (text or "").strip()
+    if not source:
+        return None
+    for pattern, day_idx in _WEEKDAY_FULL_PATTERNS:
+        if pattern.search(source):
+            return day_idx
+    for pattern, day_idx in _WEEKDAY_SHORT_PATTERNS:
+        if pattern.search(source):
+            return day_idx
+    return None
+
+
 def normalize_category(value: Any) -> str:
     mapping = {
         "олимпиада": "olympiad", "олимпиад": "olympiad", "olympiad": "olympiad",

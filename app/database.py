@@ -165,6 +165,10 @@ EVENT_FIELDS = {
 }
 PROFILE_FIELDS = {"mode", "day_start", "day_end", "max_task_minutes", "wake_time", "sleep_time"}
 WATCH_FIELDS = {"url", "goal", "last_hash", "last_summary", "interval_hours", "last_checked", "is_active"}
+RECURRING_FIELDS = {
+    "weekday", "start_time", "end_time", "title", "category",
+    "location", "buffer_before_min", "buffer_after_min", "is_active",
+}
 
 
 class Database:
@@ -592,6 +596,16 @@ class Database:
 
     async def get_recurring(self, slot_id: int) -> aiosqlite.Row | None:
         return await self.fetchone("SELECT * FROM recurring_schedule WHERE id=?", (slot_id,))
+
+    async def update_recurring(self, slot_id: int, **fields: Any) -> None:
+        filtered = {key: value for key, value in fields.items() if key in RECURRING_FIELDS}
+        if not filtered:
+            return
+        assignments = ", ".join(f"{key}=?" for key in filtered)
+        await self.execute(
+            f"UPDATE recurring_schedule SET {assignments} WHERE id=?",
+            (*filtered.values(), slot_id),
+        )
 
     async def delete_recurring(self, slot_id: int) -> None:
         await self.execute("DELETE FROM recurring_schedule WHERE id=?", (slot_id,))

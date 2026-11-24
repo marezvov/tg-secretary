@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
@@ -45,8 +46,9 @@ from ..ui_formatter import (
     send_long,
 )
 from ..utils import (
-    WEEKDAY_ALIASES,
+    WEEKDAYS_SHORT,
     clip,
+    detect_weekday_in_text,
     esc,
     extract_urls,
     fmt_dt,
@@ -728,6 +730,16 @@ async def _apply_item(
         weekday = item.weekday
         start_time = parse_hhmm(item.start_time)
         end_time = parse_hhmm(item.end_time)
+
+        # Auto-correct or infer weekday if title or first_step mentions day of week
+        detected_day = detect_weekday_in_text(f"{item.title} {item.first_step or ''}")
+        if detected_day is not None and detected_day != weekday:
+            log.info(
+                "Auto-correcting slot '%s' weekday from %s to %s based on text",
+                item.title, weekday, detected_day,
+            )
+            weekday = detected_day
+
         if weekday is None or start_time is None or end_time is None:
             warnings.append(
                 f"📅 У регулярного дела «{esc(item.title)}» нет точного слота времени в расписании — сохранил как задачу под свободные окна."
@@ -736,18 +748,6 @@ async def _apply_item(
             return await _create_task(
                 item, now, deadline, remind_at, source_url, first_step=first_step
             )
-
-        # Auto-correct weekday if title or first_step mentions day of week
-        text_for_day = f"{item.title} {item.first_step or ''}".lower()
-        for alias, day_idx in WEEKDAY_ALIASES.items():
-            if re.search(r"\b" + re.escape(alias) + r"\b", text_for_day):
-                if weekday != day_idx:
-                    log.info(
-                        "Auto-correcting slot '%s' weekday from %s to %s based on text",
-                        item.title, weekday, day_idx,
-                    )
-                    weekday = day_idx
-                break
 
         if end_time <= start_time:
             end_time = (datetime.combine(now.date(), start_time) + timedelta(hours=1)).time()
@@ -859,10 +859,20 @@ def _dedupe_items(items: list[InboxItem]) -> list[InboxItem]:
     seen: set[tuple[str, str, str]] = set()
     result: list[InboxItem] = []
     for item in items:
+        when_key = str(
+            item.start_dt
+            or item.deadline_at
+            or item.reminder_at
+            or (
+                f"w{item.weekday}:{item.start_time}-{item.end_time}"
+                if item.type == "recurring_schedule"
+                else ""
+            )
+        )
         key = (
             item.type,
             item.title.strip().lower(),
-            str(item.start_dt or item.deadline_at or item.reminder_at or ""),
+            when_key,
         )
         if key in seen:
             continue
@@ -962,7 +972,8 @@ async def _send_result(
             slot = await db().get_recurring(row_id)
             if slot is None:
                 continue
-            lines.extend(["", "🔁 Регулярное занятие:", format_schedule_slot(slot)])
+            day_label = WEEKDAYS_SHORT[int(slot["weekday"])] if 0 <= int(slot["weekday"]) <= 6 else "?"
+            lines.extend(["", f"🔁 Регулярное занятие ({day_label}):", format_schedule_slot(slot)])
 
     for document in documents:
         lines.extend(

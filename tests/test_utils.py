@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 from app.utils import (
     clip,
     combine,
+    detect_weekday_in_text,
     esc,
     fmt_dt,
     fts_query,
@@ -116,6 +117,18 @@ class TestUtils(unittest.TestCase):
         self.assertEqual(normalize_energy("низкая"), "low")
         self.assertEqual(normalize_reg_status("готово"), "done")
         self.assertEqual(normalize_reg_status("в процессе"), "pending")
+
+    def test_detect_weekday_in_text(self):
+        self.assertEqual(detect_weekday_in_text("Школа (Понедельник)"), 0)
+        self.assertEqual(detect_weekday_in_text("Школа: Вторник"), 1)
+        self.assertEqual(detect_weekday_in_text("Занятия по средам"), 2)
+        self.assertEqual(detect_weekday_in_text("В четверг до 16:00"), 3)
+        self.assertEqual(detect_weekday_in_text("Пятница, 7 уроков"), 4)
+        self.assertEqual(detect_weekday_in_text("В субботу короткий день"), 5)
+        self.assertEqual(detect_weekday_in_text("Выходной в воскресенье"), 6)
+        self.assertEqual(detect_weekday_in_text("Кружок (Вт)"), 1)
+        self.assertIsNone(detect_weekday_in_text("Средняя школа №5"))
+        self.assertIsNone(detect_weekday_in_text("Просто задача без дня"))
 
     def test_fts_query(self):
         self.assertEqual(fts_query("физика олимпиада"), '"физика"* "олимпиада"*')
