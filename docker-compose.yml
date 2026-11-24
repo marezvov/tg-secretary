@@ -1,0 +1,17 @@
+services:
+  tg-secretary:
+  build:
+    context: .
+    dockerfile: Dockerfile
+  container_name: tg-secretary
+  restart: unless-stopped
+  env_file:
+    - .env
+  environment:
+    - PYTHONUNBUFFERED=1
+    - DB_PATH=/app/data/secretary.db
+  volumes:
+    - ./data:/app/data
+  # extra_hosts allows container to access LLM running on host machine via host.docker.internal
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
