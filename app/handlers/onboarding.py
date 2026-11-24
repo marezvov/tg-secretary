@@ -33,6 +33,7 @@ from ..ui_formatter import (
     format_day_schedule,
     format_models_settings,
     format_power_settings,
+    format_progress_settings,
     format_schedule_slot,
     format_settings_main,
     format_weekday_profile,
@@ -114,10 +115,46 @@ def settings_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="🧠 Модели", callback_data="set:models"),
             ],
             [
+                InlineKeyboardButton(text="⚡️ Ход выполнения", callback_data="set:progress"),
+                InlineKeyboardButton(text="🖥 Статус сервера", callback_data="menu:status"),
+            ],
+            [
                 InlineKeyboardButton(text="📊 Статистика", callback_data="menu:stats"),
                 InlineKeyboardButton(text="🗃 Архив", callback_data="arch:menu"),
             ],
             [InlineKeyboardButton(text="✖️ Закрыть", callback_data="set:close")],
+        ]
+    )
+
+
+def progress_settings_keyboard(values: dict[str, Any]) -> InlineKeyboardMarkup:
+    mode = str(values.get("progress_mode") or "verbose")
+    mode_btn_text = {
+        "verbose": "Режим: Подробный 📝",
+        "compact": "Режим: Компактный ⏱",
+        "off": "Режим: Выключен 🔇",
+    }.get(mode, "Режим: Подробный 📝")
+
+    def _btn(label: str, key: str, cb_suffix: str) -> InlineKeyboardButton:
+        checked = bool(values.get(key, True))
+        icon = "✅" if checked else "❌"
+        return InlineKeyboardButton(text=f"{icon} {label}", callback_data=f"set:prog:{cb_suffix}")
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=mode_btn_text, callback_data="set:prog:cycle_mode")],
+            [
+                _btn("🌐 Ссылки", "progress_notify_browser", "browser"),
+                _btn("🎧 Аудио", "progress_notify_voice", "voice"),
+            ],
+            [
+                _btn("📄 Документы", "progress_notify_doc", "doc"),
+                _btn("🧠 Нейросеть", "progress_notify_llm", "llm"),
+            ],
+            [
+                _btn("📅 Календарь", "progress_notify_calendar", "calendar"),
+            ],
+            [InlineKeyboardButton(text="⬅️ Назад в настройки", callback_data="set:menu")],
         ]
     )
 
@@ -1228,3 +1265,59 @@ async def profile_text_handler(message: Message, state: FSMContext) -> None:
         "✅ Профиль сохранён. Учту его при разборе входящих и в брифингах.",
         reply_markup=settings_keyboard(),
     )
+
+
+# --------------------------------------------------------------------------- live progress settings
+@router.callback_query(F.data == "set:progress")
+async def cb_settings_progress(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    await callback.answer()
+    values = await settings.all()
+    await safe_edit(
+        callback,
+        format_progress_settings(values),
+        progress_settings_keyboard(values),
+    )
+
+
+@router.callback_query(F.data == "set:prog:cycle_mode")
+async def cb_prog_cycle_mode(callback: CallbackQuery) -> None:
+    modes = ["verbose", "compact", "off"]
+    current = str(await settings.get("progress_mode") or "verbose")
+    next_idx = (modes.index(current) + 1) % len(modes) if current in modes else 0
+    new_mode = modes[next_idx]
+    await settings.set("progress_mode", new_mode)
+    await callback.answer(f"Режим: {new_mode}")
+    values = await settings.all()
+    await safe_edit(
+        callback,
+        format_progress_settings(values),
+        progress_settings_keyboard(values),
+    )
+
+
+@router.callback_query(F.data.startswith("set:prog:"))
+async def cb_prog_toggle_category(callback: CallbackQuery) -> None:
+    suffix = callback.data.split(":")[2]
+    key_map = {
+        "browser": "progress_notify_browser",
+        "voice": "progress_notify_voice",
+        "doc": "progress_notify_doc",
+        "llm": "progress_notify_llm",
+        "calendar": "progress_notify_calendar",
+    }
+    key = key_map.get(suffix)
+    if not key:
+        await callback.answer("Неизвестный параметр", show_alert=True)
+        return
+    current = bool(await settings.get(key, True))
+    await settings.set(key, not current)
+    status_label = "включено" if not current else "выключено"
+    await callback.answer(f"{suffix}: {status_label}")
+    values = await settings.all()
+    await safe_edit(
+        callback,
+        format_progress_settings(values),
+        progress_settings_keyboard(values),
+    )
+

@@ -32,6 +32,7 @@ COMMANDS = [
     BotCommand(command="now", description="Одна задача на сейчас"),
     BotCommand(command="schedule_edit", description="Сетка занятий и импорт"),
     BotCommand(command="inbox", description="История входящих"),
+    BotCommand(command="status", description="Статус сервера и моделей"),
     BotCommand(command="notes", description="Заметки"),
     BotCommand(command="find", description="Поиск по заметкам и задачам"),
     BotCommand(command="reminders", description="Напоминания"),

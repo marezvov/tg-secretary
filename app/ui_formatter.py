@@ -639,3 +639,90 @@ def format_weekday_profile(profile: Any) -> str:
 def event_button_label(event: Any) -> str:
     start = parse_datetime(event["start_dt"])
     return f"{CATEGORY_ICONS.get(str(event['category']), '📌')} {start.strftime('%d.%m %H:%M') if start else ''} {clip(event['title'], 22)}"
+
+
+def format_server_status(data: dict[str, Any]) -> str:
+    hw = data["hardware"]
+    llm = data["llm"]
+    whisper_info = data["whisper"]
+    vlm_info = data["vlm"]
+    scheduler_info = data["scheduler"]
+    semaphore_busy = data["semaphore_busy"]
+
+    if llm["online"]:
+        llm_status = f"🟢 Онлайн ({llm['latency_ms']:.0f} мс)"
+    else:
+        llm_status = f"🔴 Офлайн ({esc(llm.get('error') or 'недоступен')})"
+
+    cpu_str = f"{hw['cpu_cores']} ядер"
+    if hw.get("cpu_percent") is not None:
+        cpu_str += f" · {hw['cpu_percent']:.0f}%"
+
+    lines = [
+        "🖥 <b>Статус сервера и моделей</b>",
+        "",
+        "<b>💻 Оборудование ПК:</b>",
+        f"• ОС: <code>{esc(hw['os_name'])} ({esc(hw['architecture'])})</code>",
+        f"• Хост: <code>{esc(hw['hostname'])}</code> · Python {esc(hw['python_version'])}",
+        f"• CPU: <b>{cpu_str}</b>",
+        f"• RAM: <b>{esc(hw['ram_text'])}</b>",
+        f"• Диск: <b>{esc(hw['disk_text'])}</b>",
+        f"• База данных SQLite: <b>{esc(hw['db_size_text'])}</b>",
+        f"• Аптайм бота: <b>{esc(hw['bot_uptime'])}</b> (хост: {esc(hw['host_uptime'])})",
+        "",
+        "<b>🧠 Нейросети и модели:</b>",
+        f"• LLM эндпоинт: <code>{esc(llm['base_url'])}</code>",
+        f"• Статус LLM: <b>{llm_status}</b>",
+        f"• Модель LLM: <code>{esc(llm['configured_model'])}</code> "
+        f"{'✅' if llm.get('model_active') else '⚠️ не найдена в списке'}",
+    ]
+
+    if llm.get("available_models"):
+        models_preview = ", ".join(f"<code>{esc(m)}</code>" for m in llm["available_models"][:4])
+        if len(llm["available_models"]) > 4:
+            models_preview += f" и ещё {len(llm['available_models']) - 4}"
+        lines.append(f"• Доступно моделей: {models_preview}")
+
+    whisper_state = "🟢 В памяти RAM" if whisper_info["in_ram"] else "💤 Выгружен (lazy)"
+    if whisper_info["model_configured"].lower() == "off":
+        whisper_state = "⚪ Отключён"
+
+    lines.extend(
+        [
+            f"• Whisper STT: <b>{esc(whisper_info['model_configured'])}</b> · {whisper_state} (активность: {esc(whisper_info['last_used'])})",
+            f"• VLM (Vision): <b>{'🟢 Включён' if vlm_info['enabled'] else '⚪ Отключён'}</b> (<code>{esc(vlm_info['model'])}</code>)",
+            "",
+            "<b>⚙️ Очередь и планировщик:</b>",
+            f"• Очередь тяжелых задач: <b>{'🟡 Занята обработкой' if semaphore_busy else '🟢 Свободна'}</b>",
+            f"• Фоновый планировщик: <b>{'🟢 Работает' if scheduler_info['running'] else '🔴 Остановлен'}</b> ({scheduler_info['jobs_count']} задач)",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def format_progress_settings(values: dict[str, Any]) -> str:
+    mode = str(values.get("progress_mode") or "verbose")
+    mode_titles = {
+        "verbose": "Подробный (по шагам) 📝",
+        "compact": "Компактный (одна строка) ⏱",
+        "off": "Выключен (тихий) 🔇",
+    }
+    mode_text = mode_titles.get(mode, mode)
+
+    def _chk(key: str) -> str:
+        return "✅ Включено" if values.get(key, True) else "❌ Выключено"
+
+    return (
+        "⚡️ <b>Ход выполнения задач (Live Status)</b>\n\n"
+        "Бот сообщает в реальном времени, что он сейчас делает при разборе входящих "
+        "(открывает ссылку, расшифровывает аудио, отправляет запрос в нейросеть, планирует в календарь).\n\n"
+        f"<b>Текущий режим:</b> {mode_text}\n\n"
+        "<b>Категории уведомлений:</b>\n"
+        f"• 🌐 Ссылки и браузер: <b>{_chk('progress_notify_browser')}</b>\n"
+        f"• 🎧 Голосовые и аудио: <b>{_chk('progress_notify_voice')}</b>\n"
+        f"• 📄 Документы и файлы: <b>{_chk('progress_notify_doc')}</b>\n"
+        f"• 🧠 Запросы к нейросети: <b>{_chk('progress_notify_llm')}</b>\n"
+        f"• 📅 Задачи и календарь: <b>{_chk('progress_notify_calendar')}</b>\n\n"
+        "Нажимай на кнопки ниже, чтобы переключить режим или настроить категории."
+    )
+

@@ -28,6 +28,7 @@ from ..local_calendar import (
     pick_task_for_energy,
 )
 from ..scheduler_jobs import check_watch_entry
+from ..system_status import get_full_system_status
 from ..ui_formatter import (
     format_archive_menu,
     format_event,
@@ -36,6 +37,7 @@ from ..ui_formatter import (
     format_note_search,
     format_now_task,
     format_reminder,
+    format_server_status,
     format_stats,
     format_task_compact,
     format_task_detail,
@@ -99,6 +101,9 @@ def main_keyboard() -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton(text="⚙️ Настройки", callback_data="set:menu"),
+                InlineKeyboardButton(text="🖥 Статус", callback_data="menu:status"),
+            ],
+            [
                 InlineKeyboardButton(text="❓ Помощь", callback_data="menu:help"),
             ],
         ]
@@ -143,6 +148,35 @@ async def cb_help(callback: CallbackQuery) -> None:
     await safe_edit(callback, _help_text(), main_keyboard())
 
 
+@router.message(Command("status"))
+async def cmd_status(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    status_data = await get_full_system_status()
+    text = format_server_status(status_data)
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🔄 Обновить", callback_data="status:refresh")],
+            [InlineKeyboardButton(text="🏠 Меню", callback_data="menu:main")],
+        ]
+    )
+    await message.answer(text, reply_markup=keyboard)
+
+
+@router.callback_query(F.data.in_({"menu:status", "status:refresh"}))
+async def cb_status(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    await callback.answer("Проверяю статус...")
+    status_data = await get_full_system_status()
+    text = format_server_status(status_data)
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🔄 Обновить", callback_data="status:refresh")],
+            [InlineKeyboardButton(text="🏠 Меню", callback_data="menu:main")],
+        ]
+    )
+    await safe_edit(callback, text, keyboard)
+
+
 def _welcome_text() -> str:
     return (
         "🧠 <b>Личный секретарь на связи</b>\n\n"
@@ -168,6 +202,7 @@ def _help_text() -> str:
         "• /find запрос — полнотекстовый поиск по заметкам и задачам\n"
         "• /reminders — напоминания\n"
         "• /inbox — история входящих\n"
+        "• /status — статус сервера, ПК и моделей\n"
         "• /watch — мониторинг страниц\n"
         "• /stats — статистика\n\n"
         "<b>Быстрое добавление</b>\n"
@@ -175,7 +210,7 @@ def _help_text() -> str:
         "• /note мысль или ссылка\n"
         "• /remind 25.11 18:00 позвонить\n\n"
         "<b>Настройка</b>\n"
-        "• /settings — город, сетка, профили дней, питание ПК, модели\n"
+        "• /settings — город, сетка, профили дней, питание ПК, модели, ход задач\n"
         "• /cancel — отменить текущий ввод\n\n"
         "💡 Любое сообщение без команды автоматически попадёт в Inbox."
     )

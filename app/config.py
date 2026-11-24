@@ -80,6 +80,12 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "postponed_until": None,
     "sleep_notice_date": None,
     "setup_complete": False,
+    "progress_mode": "verbose",
+    "progress_notify_browser": True,
+    "progress_notify_voice": True,
+    "progress_notify_doc": True,
+    "progress_notify_llm": True,
+    "progress_notify_calendar": True,
 }
 
 MISSING = object()

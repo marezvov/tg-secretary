@@ -28,6 +28,7 @@ from ..config import settings
 from ..database import Database
 from ..documents import DocumentError, extract_document_text
 from ..llm_client import LLMError, chat_json, chat_text, vision_json
+from ..progress import StatusReporter
 from ..prompts import document_summary_prompt, inbox_prompt, photo_prompt
 from ..runtime import HEAVY_SEMAPHORE
 from ..schemas import InboxItem, InboxResult
@@ -315,6 +316,7 @@ async def _process_parts(bot: Bot, chat_id: int, parts: list[InboxPart]) -> bool
     source_urls: list[str] = []
     created: list[dict[str, Any]] = []
 
+    reporter = await StatusReporter.create(bot, chat_id, settings)
     typing = asyncio.create_task(_typing_loop(bot, chat_id))
     try:
         for part in parts:
@@ -323,9 +325,11 @@ async def _process_parts(bot: Bot, chat_id: int, parts: list[InboxPart]) -> bool
                     if part.text.strip():
                         texts.append(part.text.strip())
                 elif part.kind == "voice":
+                    await reporter.step("voice", "🎧 Расшифровываю аудио через Whisper...")
                     transcript = await _transcribe(bot, chat_id, part)
                     if transcript:
                         texts.append(transcript)
+                        await reporter.step_done(f"🎧 Аудио расшифровано ({len(transcript)} симв.)")
                 elif part.kind == "photo":
                     if part.caption.strip():
                         captions.append(part.caption.strip())
@@ -336,12 +340,16 @@ async def _process_parts(bot: Bot, chat_id: int, parts: list[InboxPart]) -> bool
                         )
                         errors.append("VLM отключён — изображение не разобрано.")
                         continue
+                    await reporter.step("llm", "📷 Загружаю и подготавливаю изображение...")
                     data = await _download(bot, part)
                     images.append((data, part.caption.strip()))
                 elif part.kind == "document":
+                    doc_label = part.file_name or "документ"
+                    await reporter.step("doc", f"📄 Извлекаю текст из {clip(doc_label, 30)}...")
                     entry = await _process_document(bot, part)
                     if entry:
                         document_entries.append(entry)
+                        await reporter.step_done(f"📄 Документ разобран: {clip(doc_label, 25)}")
                 else:
                     warnings.append(f"Неизвестный тип вложения: {esc(part.kind)}")
             except (STTError, DocumentError, LLMError) as exc:
@@ -359,11 +367,13 @@ async def _process_parts(bot: Bot, chat_id: int, parts: list[InboxPart]) -> bool
         all_urls = _unique_urls(texts)
         for url in all_urls[:MAX_FETCH_URLS]:
             try:
+                await reporter.step("browser", f"🌐 Открываю ссылку: {clip(url, 45)}...")
                 page = await extract_page(
                     url, goal="Извлечь факты, даты, дедлайны и условия участия"
                 )
                 page_blocks.append(page.prompt_text(limit=12000))
                 source_urls.append(url)
+                await reporter.step_done(f"🌐 Страница открыта: {clip(page.title or url, 30)}")
             except BrowserError as exc:
                 warnings.append(f"🌐 {url}: {esc(clip(exc, 220))}")
             except Exception as exc:  # noqa: BLE001 - browser is optional
@@ -390,6 +400,7 @@ async def _process_parts(bot: Bot, chat_id: int, parts: list[InboxPart]) -> bool
 
         vision_success = 0
         if images:
+            await reporter.step("llm", "🧠 Анализирую изображение и текст через VLM...")
             for image, caption in images[:MAX_BATCH_IMAGES]:
                 try:
                     raw = await vision_json(
@@ -413,9 +424,12 @@ async def _process_parts(bot: Bot, chat_id: int, parts: list[InboxPart]) -> bool
                 warnings.append(
                     f"📷 Разобраны первые {MAX_BATCH_IMAGES} изображения из {len(images)}."
                 )
+            if vision_success > 0:
+                await reporter.step_done("🧠 Изображения проанализированы")
 
         if content and (not images or vision_success == 0):
             try:
+                await reporter.step("llm", "🧠 Анализирую запрос через нейросеть, готовлю ответ...")
                 raw = await chat_json(
                     [{"role": "user", "content": inbox_prompt(now, tz_name, profile, content)}],
                     InboxResult,
@@ -425,6 +439,7 @@ async def _process_parts(bot: Bot, chat_id: int, parts: list[InboxPart]) -> bool
                 result_items.extend(parsed.items)
                 if parsed.reply_summary:
                     summaries.append(parsed.reply_summary)
+                await reporter.step_done("🧠 Ответ нейросети готов")
             except LLMError as exc:
                 errors.append(f"LLM: {exc}")
             except Exception as exc:  # noqa: BLE001
@@ -433,6 +448,9 @@ async def _process_parts(bot: Bot, chat_id: int, parts: list[InboxPart]) -> bool
 
         result_items = _dedupe_items(result_items)
         source_url = source_urls[0] if source_urls else None
+
+        if result_items:
+            await reporter.step("calendar", f"📅 Сохраняю задачи и события ({len(result_items)})...")
 
         for item in result_items:
             try:
@@ -447,6 +465,9 @@ async def _process_parts(bot: Bot, chat_id: int, parts: list[InboxPart]) -> bool
         status = "pending_retry" if fatal else "processed"
         await _set_status(parts, status)
 
+        # Clean up temporary progress message before rendering final card
+        await reporter.finish(delete=True)
+
         summary = _join_summaries(summaries)
         if fatal:
             await _send_failure(bot, chat_id, parts, errors, warnings)
@@ -458,6 +479,7 @@ async def _process_parts(bot: Bot, chat_id: int, parts: list[InboxPart]) -> bool
         return not fatal
     except Exception as exc:  # noqa: BLE001 - whole batch safety net
         log.exception("Inbox processing crashed")
+        await reporter.fail(str(exc))
         await _set_status(parts, "pending_retry")
         await _send_failure(bot, chat_id, parts, [str(exc)], warnings)
         return False
