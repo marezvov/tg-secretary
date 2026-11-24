@@ -40,6 +40,13 @@ CATEGORY_ICONS = {
 ENERGY_ICONS = {"high": "🔴", "medium": "🟡", "low": "🟢"}
 STATUS_ICONS = {"todo": "⏳", "done": "✅", "frozen": "🧊"}
 
+MOOD_ICONS = {"great": "🔥", "good": "😊", "neutral": "😐", "low": "😔", "stressed": "🤯"}
+MOOD_NAMES = {"great": "Отличное", "good": "Хорошее", "neutral": "Нормальное", "low": "Усталость", "stressed": "Стресс"}
+ENERGY_NUM_ICONS = {1: "🪫", 2: "🔋", 3: "⚡️"}
+ENERGY_NUM_NAMES = {1: "Низкая", 2: "Средняя", 3: "Высокая"}
+STRESS_ICONS = {0: "🟢", 1: "🟡", 2: "🔴"}
+STRESS_NAMES = {0: "Спокойно", 1: "Умеренный", 2: "Высокий"}
+
 URL_RE = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
 
 
@@ -347,14 +354,18 @@ def normalize_weekday(value: Any) -> int | None:
     if value is None:
         return None
     if isinstance(value, int):
-        return value if 0 <= value <= 6 else None
+        if 0 <= value <= 6:
+            return value
+        if value == 7:
+            return 6
+        return None
     text = str(value).strip().lower()
     if text.isdigit():
         number = int(text)
-        if 1 <= number <= 7:
-            return number - 1
-        if number == 0:
-            return 0
+        if 0 <= number <= 6:
+            return number
+        if number == 7:
+            return 6
         return None
     return WEEKDAY_ALIASES.get(text.replace(".", ""))
 
@@ -402,3 +413,17 @@ def mode_name(mode: str | None) -> str:
 
 def category_icon(category: str | None) -> str:
     return CATEGORY_ICONS.get(str(category or "study"), "📌")
+
+
+def mood_icon(mood: str | None) -> str:
+    return MOOD_ICONS.get(str(mood or "neutral"), "😐")
+
+
+def mood_name(mood: str | None) -> str:
+    return MOOD_NAMES.get(str(mood or "neutral"), "Нормальное")
+
+
+def energy_num_label(energy: int | None) -> str:
+    val = int(energy or 2)
+    return f"{ENERGY_NUM_ICONS.get(val, '🔋')} {ENERGY_NUM_NAMES.get(val, 'Средняя')}"
+

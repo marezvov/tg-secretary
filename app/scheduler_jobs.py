@@ -335,7 +335,10 @@ async def morning_brief_job(bot: Any, db: Any) -> None:
                 InlineKeyboardButton(text="📅 День", callback_data="menu:today"),
                 InlineKeyboardButton(text="📋 Задачи", callback_data="menu:tasks"),
                 InlineKeyboardButton(text="🧘 Сейчас", callback_data="now:menu"),
-            ]
+            ],
+            [
+                InlineKeyboardButton(text="🌿 Отметить самочувствие", callback_data="mood:menu"),
+            ],
         ]
     )
     if await _send(bot, owner_id, text, keyboard):
@@ -380,12 +383,26 @@ async def evening_brief_job(bot: Any, db: Any) -> None:
         lines.extend(["", f"⏰ Завтра ПК включится в <b>{esc(wake)}</b>."])
     if tomorrow_weather:
         lines.extend(["", tomorrow_weather])
+    lines.extend([
+        "",
+        "🌿 <b>Как прошёл твой день?</b> Оцени самочувствие:",
+    ])
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [
+                InlineKeyboardButton(text="🔥 Отлично", callback_data="mood:quick:great"),
+                InlineKeyboardButton(text="😊 Хорошо", callback_data="mood:quick:good"),
+                InlineKeyboardButton(text="😐 Нормально", callback_data="mood:quick:neutral"),
+            ],
+            [
+                InlineKeyboardButton(text="😔 Устал", callback_data="mood:quick:low"),
+                InlineKeyboardButton(text="🤯 Стресс", callback_data="mood:quick:stressed"),
+            ],
+            [
                 InlineKeyboardButton(text="📅 Завтра", callback_data=f"day:{tomorrow.isoformat()}"),
                 InlineKeyboardButton(text="📋 Задачи", callback_data="menu:tasks"),
-            ]
+                InlineKeyboardButton(text="🌿 Подробнее", callback_data="mood:menu"),
+            ],
         ]
     )
     if await _send(bot, owner_id, "\n".join(lines), keyboard):

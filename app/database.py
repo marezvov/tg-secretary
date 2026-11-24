@@ -132,6 +132,16 @@ CREATE TABLE IF NOT EXISTS inbox_log (
     status TEXT NOT NULL DEFAULT 'processed',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS user_states (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    mood TEXT NOT NULL,
+    energy INTEGER NOT NULL DEFAULT 2,
+    stress INTEGER NOT NULL DEFAULT 0,
+    note TEXT,
+    source TEXT NOT NULL DEFAULT 'manual',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 INDEXES = """
@@ -142,6 +152,7 @@ CREATE INDEX IF NOT EXISTS idx_events_start ON events(start_dt);
 CREATE INDEX IF NOT EXISTS idx_reminders_due ON reminders(is_sent, remind_at);
 CREATE INDEX IF NOT EXISTS idx_watched_active ON watched_urls(is_active);
 CREATE INDEX IF NOT EXISTS idx_inbox_status ON inbox_log(status, created_at);
+CREATE INDEX IF NOT EXISTS idx_user_states_created ON user_states(created_at);
 """
 
 TASK_FIELDS = {
@@ -826,6 +837,98 @@ class Database:
     async def delete_inbox(self, inbox_id: int) -> None:
         await self.execute("DELETE FROM inbox_log WHERE id=?", (inbox_id,))
 
+    # ------------------------------------------------------------------ user_states (mood & energy)
+    async def create_user_state(
+        self,
+        mood: str,
+        energy: int = 2,
+        note: str | None = None,
+        stress: int = 0,
+        source: str = "manual",
+    ) -> int:
+        now_db = to_db(datetime.now())
+        return await self.execute(
+            """
+            INSERT INTO user_states (mood, energy, stress, note, source, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (mood, int(energy), int(stress), note, source, now_db),
+        )
+
+    async def get_user_state(self, state_id: int) -> aiosqlite.Row | None:
+        return await self.fetchone("SELECT * FROM user_states WHERE id=?", (state_id,))
+
+    async def get_latest_user_state(self) -> aiosqlite.Row | None:
+        return await self.fetchone(
+            "SELECT * FROM user_states ORDER BY created_at DESC, id DESC LIMIT 1"
+        )
+
+    async def update_user_state(self, state_id: int, **fields: Any) -> None:
+        allowed = {"mood", "energy", "stress", "note", "source"}
+        valid = {k: v for k, v in fields.items() if k in allowed}
+        if not valid:
+            return
+        assignments = ", ".join(f"{k}=?" for k in valid)
+        await self.execute(
+            f"UPDATE user_states SET {assignments} WHERE id=?",
+            (*valid.values(), state_id),
+        )
+
+    async def list_user_states(
+        self, limit: int = 30, days: int | None = None
+    ) -> list[aiosqlite.Row]:
+        where, params = ("", [])
+        if days is not None and days > 0:
+            cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M")
+            where = "WHERE created_at >= ?"
+            params = [cutoff]
+        return await self.fetchall(
+            f"SELECT * FROM user_states {where} ORDER BY created_at DESC, id DESC LIMIT ?",
+            (*params, limit),
+        )
+
+    async def delete_user_state(self, state_id: int) -> None:
+        await self.execute("DELETE FROM user_states WHERE id=?", (state_id,))
+
+    async def get_state_stats(self, days: int = 7) -> dict[str, Any]:
+        cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M")
+        rows = await self.fetchall(
+            "SELECT * FROM user_states WHERE created_at >= ? ORDER BY created_at ASC",
+            (cutoff,),
+        )
+        if not rows:
+            return {
+                "count": 0,
+                "days": days,
+                "avg_energy": 0.0,
+                "dominant_mood": None,
+                "mood_counts": {},
+                "energy_counts": {},
+                "latest": None,
+            }
+        mood_counts: dict[str, int] = {}
+        energy_counts: dict[int, int] = {1: 0, 2: 0, 3: 0}
+        total_energy = 0
+        for r in rows:
+            m = str(r["mood"])
+            mood_counts[m] = mood_counts.get(m, 0) + 1
+            e = int(r["energy"] or 2)
+            energy_counts[e] = energy_counts.get(e, 0) + 1
+            total_energy += e
+
+        dominant_mood = max(mood_counts.items(), key=lambda pair: pair[1])[0]
+        avg_energy = round(total_energy / len(rows), 1)
+        latest = rows[-1]
+        return {
+            "count": len(rows),
+            "days": days,
+            "avg_energy": avg_energy,
+            "dominant_mood": dominant_mood,
+            "mood_counts": mood_counts,
+            "energy_counts": energy_counts,
+            "latest": latest,
+        }
+
     # ------------------------------------------------------------------ stats
     async def stats(self) -> dict[str, Any]:
         task_counts = await self.task_counts_by_status()
@@ -855,6 +958,8 @@ class Database:
         done_categories = await self.fetchall(
             "SELECT category, COUNT(*) AS n FROM tasks WHERE status='done' GROUP BY category"
         )
+        latest_state = await self.get_latest_user_state()
+        state_stats = await self.get_state_stats(7)
         return {
             "tasks_todo": task_counts.get("todo", 0),
             "tasks_done": task_counts.get("done", 0),
@@ -873,4 +978,6 @@ class Database:
             "inbox_total": await self.count_inbox(),
             "tasks_by_category": {row["category"]: int(row["n"]) for row in categories},
             "tasks_done_by_category": {row["category"]: int(row["n"]) for row in done_categories},
+            "latest_user_state": latest_state,
+            "user_state_stats": state_stats,
         }

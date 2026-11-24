@@ -45,6 +45,7 @@ from ..ui_formatter import (
     send_long,
 )
 from ..utils import (
+    WEEKDAY_ALIASES,
     clip,
     esc,
     extract_urls,
@@ -735,15 +736,35 @@ async def _apply_item(
             return await _create_task(
                 item, now, deadline, remind_at, source_url, first_step=first_step
             )
+
+        # Auto-correct weekday if title or first_step mentions day of week
+        text_for_day = f"{item.title} {item.first_step or ''}".lower()
+        for alias, day_idx in WEEKDAY_ALIASES.items():
+            if re.search(r"\b" + re.escape(alias) + r"\b", text_for_day):
+                if weekday != day_idx:
+                    log.info(
+                        "Auto-correcting slot '%s' weekday from %s to %s based on text",
+                        item.title, weekday, day_idx,
+                    )
+                    weekday = day_idx
+                break
+
         if end_time <= start_time:
             end_time = (datetime.combine(now.date(), start_time) + timedelta(hours=1)).time()
         existing = await db().list_recurring(int(weekday))
         for slot in existing:
+            # If same time interval exists on this weekday, update to avoid duplicates
             if (
                 slot["start_time"] == start_time.strftime("%H:%M")
                 and slot["end_time"] == end_time.strftime("%H:%M")
-                and str(slot["title"]).strip().lower() == item.title.strip().lower()
             ):
+                if str(slot["title"]).strip().lower() != item.title.strip().lower():
+                    await db().update_recurring(
+                        int(slot["id"]),
+                        title=item.title,
+                        category=item.category,
+                        location=item.location_or_url or slot["location"],
+                    )
                 return {"kind": "recurring", "id": int(slot["id"])}
         slot_id = await db().create_recurring(
             int(weekday),

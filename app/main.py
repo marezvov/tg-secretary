@@ -23,13 +23,14 @@ from .stt_whisper import whisper
 log = logging.getLogger(__name__)
 
 COMMANDS = [
-    BotCommand(command="menu", description="Главное меню и помощь"),
+    BotCommand(command="menu", description="Главное меню"),
     BotCommand(command="today", description="Карточка дня"),
     BotCommand(command="week", description="Сводка на 7 дней"),
     BotCommand(command="events", description="События и регистрации"),
     BotCommand(command="tasks", description="Задачи и авто-раскладка"),
     BotCommand(command="closed", description="Просмотр закрытых задач"),
-    BotCommand(command="now", description="Одна задача на сейчас"),
+    BotCommand(command="now", description="Одна задача на сейчас (анти-ступор)"),
+    BotCommand(command="mood", description="Настроение и уровень энергии"),
     BotCommand(command="schedule_edit", description="Сетка занятий и импорт"),
     BotCommand(command="inbox", description="История входящих"),
     BotCommand(command="status", description="Статус сервера и моделей"),
@@ -43,6 +44,7 @@ COMMANDS = [
     BotCommand(command="note", description="Быстро добавить заметку"),
     BotCommand(command="remind", description="Быстро добавить напоминание"),
     BotCommand(command="settings", description="Настройки"),
+    BotCommand(command="help", description="Справка по командам"),
     BotCommand(command="cancel", description="Отменить ввод"),
 ]
 

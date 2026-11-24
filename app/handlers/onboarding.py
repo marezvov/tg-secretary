@@ -89,7 +89,11 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton(text="🧘 Сейчас", callback_data="now:menu"),
+                InlineKeyboardButton(text="🌿 Состояние", callback_data="mood:menu"),
+            ],
+            [
                 InlineKeyboardButton(text="🗃 Архив", callback_data="arch:menu"),
+                InlineKeyboardButton(text="🖥 Статус", callback_data="menu:status"),
             ],
             [
                 InlineKeyboardButton(text="⚙️ Настройки", callback_data="set:menu"),
@@ -181,7 +185,7 @@ async def _show_settings(target: Any, edit: bool = False) -> None:
 
 
 # --------------------------------------------------------------------------- start / setup
-@router.message(Command("start"))
+@router.message(Command("start"), StateFilter("*"))
 async def cmd_start(message: Message, state: FSMContext) -> None:
     await state.clear()
     owner = await settings.owner_id()
@@ -220,7 +224,7 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
     await message.answer("\n".join(lines), reply_markup=main_menu_keyboard())
 
 
-@router.message(Command("setup", "settings"))
+@router.message(Command("setup", "settings"), StateFilter("*"))
 async def cmd_settings(message: Message, state: FSMContext) -> None:
     await state.clear()
     await _show_settings(message)
@@ -384,7 +388,7 @@ async def _show_schedule(target: CallbackQuery | Message, edit: bool = True) -> 
         await target.answer("\n".join(lines), reply_markup=keyboard)
 
 
-@router.message(Command("schedule_edit", "schedule"))
+@router.message(Command("schedule_edit", "schedule"), StateFilter("*"))
 async def cmd_schedule_edit(message: Message, state: FSMContext) -> None:
     await state.clear()
     await _show_schedule(message, edit=False)

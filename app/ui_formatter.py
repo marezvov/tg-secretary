@@ -13,12 +13,19 @@ from aiogram.types import LinkPreviewOptions
 from .utils import (
     CATEGORY_ICONS,
     ENERGY_ICONS,
+    ENERGY_NUM_ICONS,
+    ENERGY_NUM_NAMES,
     MODE_ICONS,
     MODE_NAMES,
+    MOOD_ICONS,
+    MOOD_NAMES,
     STATUS_ICONS,
+    STRESS_ICONS,
+    STRESS_NAMES,
     WEEKDAYS_SHORT,
     WEEKDAY_ALIASES,
     clip,
+    energy_num_label,
     esc,
     fmt_date,
     fmt_dt,
@@ -27,6 +34,8 @@ from .utils import (
     human_duration,
     mode_icon,
     mode_name,
+    mood_icon,
+    mood_name,
     parse_date,
     parse_datetime,
     parse_hhmm,
@@ -525,6 +534,17 @@ def format_stats(stats: dict[str, Any]) -> str:
         lines.extend(["", "<b>Закрытые задачи по категориям:</b>"])
         for key, count in sorted(done_categories.items(), key=lambda pair: -pair[1]):
             lines.append(f"• {cat_names.get(key, key)}: {count}")
+    state_stats = stats.get("user_state_stats")
+    if state_stats and state_stats.get("count"):
+        dom = state_stats.get("dominant_mood")
+        dom_str = f"{mood_icon(dom)} {mood_name(dom)}" if dom else "—"
+        lines.extend([
+            "",
+            "<b>🌿 Состояние и энергия (за 7 дней):</b>",
+            f"• Чек-инов: <b>{state_stats['count']}</b>",
+            f"• Средняя энергия: <b>{state_stats.get('avg_energy', 0)} / 3.0</b>",
+            f"• Преобладающее настроение: <b>{dom_str}</b>",
+        ])
     return "\n".join(lines)
 
 
@@ -725,4 +745,101 @@ def format_progress_settings(values: dict[str, Any]) -> str:
         f"• 📅 Задачи и календарь: <b>{_chk('progress_notify_calendar')}</b>\n\n"
         "Нажимай на кнопки ниже, чтобы переключить режим или настроить категории."
     )
+
+
+def format_mood_card(state: Any) -> str:
+    m = str(state["mood"])
+    e = int(state["energy"] or 2)
+    s = int(state["stress"] or 0)
+    lines = [
+        f"🌿 <b>Чек-ин состояния</b> · <code>{esc(state['created_at'])}</code>",
+        "",
+        f"• Настроение: {mood_icon(m)} <b>{mood_name(m)}</b>",
+        f"• Уровень энергии: <b>{energy_num_label(e)}</b>",
+        f"• Стресс: <b>{STRESS_ICONS.get(s, '🟢')} {STRESS_NAMES.get(s, 'Спокойно')}</b>",
+    ]
+    if state["note"]:
+        lines.append(f"• Заметка: <i>«{esc(state['note'])}»</i>")
+    return "\n".join(lines)
+
+
+def format_mood_menu(latest: Any | None, stats: dict[str, Any], now: datetime | None = None) -> str:
+    lines = ["🌿 <b>Трекинг настроения и энергии</b>", ""]
+    if latest is not None:
+        m = str(latest["mood"])
+        e = int(latest["energy"] or 2)
+        s = int(latest["stress"] or 0)
+        dt_str = str(latest["created_at"])
+        delta_str = ""
+        if now is not None:
+            parsed = parse_datetime(dt_str, now.tzinfo)
+            if parsed is not None:
+                delta_str = f" ({human_delta(parsed, now)})"
+        lines.extend([
+            "<b>Текущее самочувствие:</b>",
+            f"• Настроение: {mood_icon(m)} <b>{mood_name(m)}</b>",
+            f"• Энергия: <b>{energy_num_label(e)}</b> · Стресс: <b>{STRESS_ICONS.get(s, '🟢')} {STRESS_NAMES.get(s, 'Спокойно')}</b>",
+            f"• Зафиксировано: <code>{esc(dt_str)}</code>{delta_str}",
+        ])
+        if latest["note"]:
+            lines.append(f"• Рефлексия: <i>«{esc(latest['note'])}»</i>")
+        lines.append("")
+    else:
+        lines.extend([
+            "Ты пока ещё не отмечал своё состояние.",
+            "Регулярные отметки помогают боту подбирать задачи под твои силы и предупреждать выгорание.",
+            "",
+        ])
+
+    count = int(stats.get("count", 0))
+    if count > 0:
+        dom = stats.get("dominant_mood")
+        dom_str = f"{mood_icon(dom)} {mood_name(dom)}" if dom else "—"
+        avg_e = stats.get("avg_energy", 0.0)
+        m_counts = stats.get("mood_counts", {})
+        breakdown = []
+        for key in ("great", "good", "neutral", "low", "stressed"):
+            if m_counts.get(key):
+                breakdown.append(f"{mood_icon(key)} {m_counts[key]}")
+        breakdown_str = " · ".join(breakdown) if breakdown else "—"
+        lines.extend([
+            f"📊 <b>Аналитика за {stats.get('days', 7)} дней ({count} отм.):</b>",
+            f"• Преобладающее настроение: <b>{dom_str}</b>",
+            f"• Средняя энергия: <b>{avg_e} / 3.0</b>",
+            f"• Распределение: {breakdown_str}",
+            "",
+        ])
+
+    lines.append("Как ты себя чувствуешь прямо сейчас? Выбери вариант ниже:")
+    return "\n".join(lines)
+
+
+def format_mood_history(states: list[Any], stats: dict[str, Any], days: int = 7) -> str:
+    lines = [f"📈 <b>История состояния за {days} дней</b>", ""]
+    count = int(stats.get("count", 0))
+    if not states:
+        lines.append("За этот период записей нет. Нажми кнопку ниже, чтобы отметиться!")
+        return "\n".join(lines)
+
+    dom = stats.get("dominant_mood")
+    dom_str = f"{mood_icon(dom)} {mood_name(dom)}" if dom else "—"
+    avg_e = stats.get("avg_energy", 0.0)
+    lines.extend([
+        f"Всего чек-инов: <b>{count}</b> · Средняя энергия: <b>{avg_e} / 3.0</b>",
+        f"Преобладающее: <b>{dom_str}</b>",
+        "",
+        "<b>Хронология:</b>",
+    ])
+    for s in states[:15]:
+        m = str(s["mood"])
+        e = int(s["energy"] or 2)
+        time_part = str(s["created_at"])
+        if len(time_part) >= 16:
+            time_part = time_part[5:16]  # MM-DD HH:MM
+        note_str = f" — <i>«{esc(clip(s['note'], 60))}»</i>" if s["note"] else ""
+        lines.append(f"• <code>{esc(time_part)}</code>: {mood_icon(m)} {mood_name(m)} · {ENERGY_NUM_ICONS.get(e, '🔋')}{note_str}")
+    if len(states) > 15:
+        lines.append(f"<i>... и ещё {len(states) - 15} записей</i>")
+    return "\n".join(lines)
+
 

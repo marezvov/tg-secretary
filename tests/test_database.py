@@ -135,6 +135,45 @@ class TestDatabase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(st["tasks_done_week"], 1)
         self.assertIn("study", st["tasks_done_by_category"])
 
+    async def test_user_states_crud_and_stats(self):
+        s1 = await self.db.create_user_state(mood="good", energy=2, note="Хороший день", stress=0)
+        s2 = await self.db.create_user_state(mood="great", energy=3, note="Много сил", stress=0)
+        s3 = await self.db.create_user_state(mood="low", energy=1, note="Устал к вечеру", stress=1)
+
+        self.assertGreater(s1, 0)
+        self.assertGreater(s3, s2)
+
+        # get latest
+        latest = await self.db.get_latest_user_state()
+        self.assertIsNotNone(latest)
+        self.assertEqual(latest["id"], s3)
+        self.assertEqual(latest["mood"], "low")
+        self.assertEqual(latest["energy"], 1)
+        self.assertEqual(latest["note"], "Устал к вечеру")
+
+        # update note
+        await self.db.update_user_state(s3, note="Очень устал после школы")
+        updated = await self.db.get_user_state(s3)
+        self.assertEqual(updated["note"], "Очень устал после школы")
+
+        # list states
+        states = await self.db.list_user_states(limit=10, days=7)
+        self.assertEqual(len(states), 3)
+
+        # stats
+        stats = await self.db.get_state_stats(days=7)
+        self.assertEqual(stats["count"], 3)
+        self.assertAlmostEqual(stats["avg_energy"], 2.0, delta=0.1)
+        self.assertIn(stats["dominant_mood"], ["good", "great", "low"])
+        self.assertEqual(stats["energy_counts"][1], 1)
+        self.assertEqual(stats["energy_counts"][2], 1)
+        self.assertEqual(stats["energy_counts"][3], 1)
+
+        # delete
+        await self.db.delete_user_state(s1)
+        states_after = await self.db.list_user_states(limit=10)
+        self.assertEqual(len(states_after), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

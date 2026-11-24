@@ -33,6 +33,9 @@ from ..ui_formatter import (
     format_archive_menu,
     format_event,
     format_events,
+    format_mood_card,
+    format_mood_history,
+    format_mood_menu,
     format_note,
     format_note_search,
     format_now_task,
@@ -50,10 +53,13 @@ from ..ui_formatter import (
 from ..utils import (
     WEEKDAYS_SHORT,
     clip,
+    energy_num_label,
     esc,
     fmt_date,
     fmt_dt,
     human_delta,
+    mood_icon,
+    mood_name,
     parse_date,
     parse_datetime,
     title_from_text,
@@ -75,6 +81,7 @@ class ViewStates(StatesGroup):
     quick_task = State()
     quick_note = State()
     quick_remind = State()
+    mood_note = State()
 
 
 def db() -> Database:
@@ -97,13 +104,14 @@ def main_keyboard() -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton(text="🧘 Сейчас", callback_data="now:menu"),
-                InlineKeyboardButton(text="🗃 Архив", callback_data="arch:menu"),
+                InlineKeyboardButton(text="🌿 Состояние", callback_data="mood:menu"),
             ],
             [
-                InlineKeyboardButton(text="⚙️ Настройки", callback_data="set:menu"),
+                InlineKeyboardButton(text="🗃 Архив", callback_data="arch:menu"),
                 InlineKeyboardButton(text="🖥 Статус", callback_data="menu:status"),
             ],
             [
+                InlineKeyboardButton(text="⚙️ Настройки", callback_data="set:menu"),
                 InlineKeyboardButton(text="❓ Помощь", callback_data="menu:help"),
             ],
         ]
@@ -129,8 +137,14 @@ TASK_FILTER_NAMES = {
 
 
 # --------------------------------------------------------------------------- main menu
-@router.message(Command("menu", "help"))
+@router.message(Command("menu"), StateFilter("*"))
 async def cmd_menu(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await send_long(message.bot, message.chat.id, _welcome_text(), main_keyboard())
+
+
+@router.message(Command("help"), StateFilter("*"))
+async def cmd_help(message: Message, state: FSMContext) -> None:
     await state.clear()
     await send_long(message.bot, message.chat.id, _help_text(), main_keyboard())
 
@@ -148,7 +162,7 @@ async def cb_help(callback: CallbackQuery) -> None:
     await safe_edit(callback, _help_text(), main_keyboard())
 
 
-@router.message(Command("status"))
+@router.message(Command("status"), StateFilter("*"))
 async def cmd_status(message: Message, state: FSMContext) -> None:
     await state.clear()
     status_data = await get_full_system_status()
@@ -244,7 +258,7 @@ async def _today_payload(day: date) -> tuple[str, InlineKeyboardMarkup]:
     return text, keyboard
 
 
-@router.message(Command("today"))
+@router.message(Command("today"), StateFilter("*"))
 async def cmd_today(message: Message, state: FSMContext) -> None:
     await state.clear()
     tz = await settings.timezone()
@@ -311,7 +325,7 @@ async def _week_payload(start: date) -> tuple[str, InlineKeyboardMarkup]:
     return text, keyboard
 
 
-@router.message(Command("week"))
+@router.message(Command("week"), StateFilter("*"))
 async def cmd_week(message: Message, state: FSMContext) -> None:
     await state.clear()
     tz = await settings.timezone()
@@ -397,7 +411,7 @@ async def _events_payload(scope: str, offset: int) -> tuple[str, InlineKeyboardM
     return text, InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
 
 
-@router.message(Command("events"))
+@router.message(Command("events"), StateFilter("*"))
 async def cmd_events(message: Message, state: FSMContext) -> None:
     await state.clear()
     text, keyboard = await _events_payload("upcoming", 0)
@@ -629,7 +643,7 @@ async def _tasks_payload(
     return text, InlineKeyboardMarkup(inline_keyboard=filter_rows + task_rows)
 
 
-@router.message(Command("tasks"))
+@router.message(Command("tasks"), StateFilter("*"))
 async def cmd_tasks(message: Message, state: FSMContext) -> None:
     await state.clear()
     arg = _command_arg(message).strip()
@@ -650,7 +664,7 @@ async def cmd_tasks(message: Message, state: FSMContext) -> None:
     await send_long(message.bot, message.chat.id, text, keyboard)
 
 
-@router.message(Command("closed", "done"))
+@router.message(Command("closed", "done"), StateFilter("*"))
 async def cmd_closed_tasks(message: Message, state: FSMContext) -> None:
     await state.clear()
     arg = _command_arg(message).strip()
@@ -922,7 +936,7 @@ async def cb_task_plan(callback: CallbackQuery, state: FSMContext) -> None:
     )
 
 
-@router.message(ViewStates.task_plan, F.text)
+@router.message(ViewStates.task_plan, F.text & ~F.text.startswith("/"))
 async def task_plan_text(message: Message, state: FSMContext) -> None:
     text = (message.text or "").strip()
     if text.startswith("/"):
@@ -993,33 +1007,56 @@ async def cb_task_del(callback: CallbackQuery) -> None:
 
 
 # --------------------------------------------------------------------------- anti-stupor
-def _now_menu() -> tuple[str, InlineKeyboardMarkup]:
-    return (
-        "🧘 <b>Анти-ступор</b>\n\n"
-        "Как ты сейчас? Выбери честно — я дам ровно одну задачу "
-        "и конкретный первый шаг на 15 минут.",
-        InlineKeyboardMarkup(
-            inline_keyboard=[
-                [InlineKeyboardButton(text="🟢 Голова варит — сложное", callback_data="now:pick:high")],
-                [InlineKeyboardButton(text="🟡 Устал — среднее", callback_data="now:pick:medium")],
-                [InlineKeyboardButton(text="🔴 Нет сил — маленькое", callback_data="now:pick:low")],
-                [InlineKeyboardButton(text="🏠 Меню", callback_data="menu:main")],
-            ]
-        ),
+async def _now_menu_payload() -> tuple[str, InlineKeyboardMarkup]:
+    latest = await db().get_latest_user_state()
+    now = await settings.now()
+    lines = [
+        "🧘 <b>Анти-ступор</b>",
+        "",
+        "Как ты сейчас? Выбери честно — я дам ровно одну задачу и конкретный первый шаг на 15 минут.",
+    ]
+    advice = ""
+    if latest is not None:
+        parsed = parse_datetime(str(latest["created_at"]), now.tzinfo)
+        if parsed and now - parsed < timedelta(hours=12):
+            m = str(latest["mood"])
+            e = int(latest["energy"] or 2)
+            lines.extend([
+                "",
+                f"🌿 <i>Твоё самочувствие ({human_delta(parsed, now)}): {mood_icon(m)} {mood_name(m)} · {energy_num_label(e)}</i>",
+            ])
+            if e == 1 or m in ("low", "stressed"):
+                advice = "💡 <b>Совет:</b> сил мало — начни с <b>🔴 Нет сил — маленькое</b> или выпей воды и отдохни 15 минут."
+            elif e == 3 or m == "great":
+                advice = "💡 <b>Совет:</b> отличный заряд! Самое время взяться за <b>🟢 Голова варит — сложное</b>."
+    if advice:
+        lines.append(advice)
+
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🟢 Голова варит — сложное", callback_data="now:pick:high")],
+            [InlineKeyboardButton(text="🟡 Устал — среднее", callback_data="now:pick:medium")],
+            [InlineKeyboardButton(text="🔴 Нет сил — маленькое", callback_data="now:pick:low")],
+            [
+                InlineKeyboardButton(text="🌿 Отметить состояние", callback_data="mood:menu"),
+                InlineKeyboardButton(text="🏠 Меню", callback_data="menu:main"),
+            ],
+        ]
     )
+    return "\n".join(lines), keyboard
 
 
-@router.message(Command("now"))
+@router.message(Command("now"), StateFilter("*"))
 async def cmd_now(message: Message, state: FSMContext) -> None:
     await state.clear()
-    text, keyboard = _now_menu()
+    text, keyboard = await _now_menu_payload()
     await message.answer(text, reply_markup=keyboard)
 
 
 @router.callback_query(F.data == "now:menu")
 async def cb_now_menu(callback: CallbackQuery) -> None:
     await callback.answer()
-    text, keyboard = _now_menu()
+    text, keyboard = await _now_menu_payload()
     await safe_edit(callback, text, keyboard)
 
 
@@ -1223,7 +1260,7 @@ async def _add_watch(url: str, criterion: str, chat_id: int, bot: Any) -> None:
     )
 
 
-@router.message(Command("watch"))
+@router.message(Command("watch"), StateFilter("*"))
 async def cmd_watch(message: Message, state: FSMContext) -> None:
     await state.clear()
     arg = _command_arg(message)
@@ -1250,7 +1287,7 @@ async def cmd_watch(message: Message, state: FSMContext) -> None:
     await _add_watch(url, parts[1].strip(), message.chat.id, message.bot)
 
 
-@router.message(ViewStates.watch_criterion, F.text)
+@router.message(ViewStates.watch_criterion, F.text & ~F.text.startswith("/"))
 async def watch_criterion_text(message: Message, state: FSMContext) -> None:
     text = (message.text or "").strip()
     if text.startswith("/"):
@@ -1384,7 +1421,7 @@ async def _notes_payload(offset: int) -> tuple[str, InlineKeyboardMarkup]:
     return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-@router.message(Command("notes"))
+@router.message(Command("notes"), StateFilter("*"))
 async def cmd_notes(message: Message, state: FSMContext) -> None:
     await state.clear()
     text, keyboard = await _notes_payload(0)
@@ -1500,7 +1537,7 @@ async def _find_payload(query: str) -> tuple[str, InlineKeyboardMarkup]:
     return "\n".join(lines).strip(), InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-@router.message(Command("find"))
+@router.message(Command("find"), StateFilter("*"))
 async def cmd_find(message: Message, state: FSMContext) -> None:
     arg = _command_arg(message)
     if not arg:
@@ -1532,7 +1569,7 @@ async def cb_find_new(callback: CallbackQuery, state: FSMContext) -> None:
     )
 
 
-@router.message(ViewStates.find_query, F.text)
+@router.message(ViewStates.find_query, F.text & ~F.text.startswith("/"))
 async def find_query_text(message: Message, state: FSMContext) -> None:
     text = (message.text or "").strip()
     if text.startswith("/"):
@@ -1581,7 +1618,7 @@ async def _reminders_payload() -> tuple[str, InlineKeyboardMarkup]:
     return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-@router.message(Command("reminders"))
+@router.message(Command("reminders"), StateFilter("*"))
 async def cmd_reminders(message: Message, state: FSMContext) -> None:
     await state.clear()
     text, keyboard = await _reminders_payload()
@@ -1733,7 +1770,7 @@ async def cb_arch_find(callback: CallbackQuery, state: FSMContext) -> None:
     )
 
 
-@router.message(Command("archive"))
+@router.message(Command("archive"), StateFilter("*"))
 async def cmd_archive(message: Message, state: FSMContext) -> None:
     await state.clear()
     text, keyboard = await _archive_payload()
@@ -1773,7 +1810,7 @@ async def cb_archive_cleanup_confirm(callback: CallbackQuery) -> None:
     await safe_edit(callback, f"🧹 Удалено старых задач: <b>{count}</b>.\n\n{text}", keyboard)
 
 
-@router.message(Command("stats"))
+@router.message(Command("stats"), StateFilter("*"))
 async def cmd_stats(message: Message, state: FSMContext) -> None:
     await state.clear()
     text, keyboard = await _stats_payload()
@@ -1834,7 +1871,7 @@ async def _create_quick_task(title: str, chat_id: int, bot: Any) -> None:
         await send_long(bot, chat_id, payload[0], payload[1])
 
 
-@router.message(Command("task"))
+@router.message(Command("task"), StateFilter("*"))
 async def cmd_task(message: Message, state: FSMContext) -> None:
     arg = _command_arg(message)
     if not arg:
@@ -1850,11 +1887,9 @@ async def cmd_task(message: Message, state: FSMContext) -> None:
     await _create_quick_task(arg, message.chat.id, message.bot)
 
 
-@router.message(ViewStates.quick_task, F.text)
+@router.message(ViewStates.quick_task, F.text & ~F.text.startswith("/"))
 async def quick_task_text(message: Message, state: FSMContext) -> None:
     text = (message.text or "").strip()
-    if text.startswith("/"):
-        return
     await state.clear()
     await _create_quick_task(text, message.chat.id, message.bot)
 
@@ -1868,7 +1903,7 @@ async def _create_quick_note(text: str, chat_id: int, bot: Any) -> None:
         await send_long(bot, chat_id, payload[0], payload[1])
 
 
-@router.message(Command("note"))
+@router.message(Command("note"), StateFilter("*"))
 async def cmd_note(message: Message, state: FSMContext) -> None:
     arg = _command_arg(message)
     if not arg:
@@ -1884,11 +1919,9 @@ async def cmd_note(message: Message, state: FSMContext) -> None:
     await _create_quick_note(arg, message.chat.id, message.bot)
 
 
-@router.message(ViewStates.quick_note, F.text)
+@router.message(ViewStates.quick_note, F.text & ~F.text.startswith("/"))
 async def quick_note_text(message: Message, state: FSMContext) -> None:
     text = (message.text or "").strip()
-    if text.startswith("/"):
-        return
     await state.clear()
     await _create_quick_note(text, message.chat.id, message.bot)
 
@@ -1937,7 +1970,7 @@ async def _create_reminder(parsed: datetime, text: str, chat_id: int, bot: Any) 
     )
 
 
-@router.message(Command("remind"))
+@router.message(Command("remind"), StateFilter("*"))
 async def cmd_remind(message: Message, state: FSMContext) -> None:
     arg = _command_arg(message)
     tz = await settings.timezone()
@@ -1958,11 +1991,9 @@ async def cmd_remind(message: Message, state: FSMContext) -> None:
     await _create_reminder(when, body, message.chat.id, message.bot)
 
 
-@router.message(ViewStates.quick_remind, F.text)
+@router.message(ViewStates.quick_remind, F.text & ~F.text.startswith("/"))
 async def quick_remind_text(message: Message, state: FSMContext) -> None:
     text = (message.text or "").strip()
-    if text.startswith("/"):
-        return
     tz = await settings.timezone()
     parsed = parse_remind_arg(text, tz)
     if parsed is None:
@@ -1971,3 +2002,222 @@ async def quick_remind_text(message: Message, state: FSMContext) -> None:
     await state.clear()
     when, body = parsed
     await _create_reminder(when, body, message.chat.id, message.bot)
+
+
+# --------------------------------------------------------------------------- mood / state tracking
+async def _mood_menu_payload() -> tuple[str, InlineKeyboardMarkup]:
+    latest = await db().get_latest_user_state()
+    stats = await db().get_state_stats(7)
+    now = await settings.now()
+    text = format_mood_menu(latest, stats, now)
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="🔥 Отличное", callback_data="mood:pick:great"),
+                InlineKeyboardButton(text="😊 Хорошее", callback_data="mood:pick:good"),
+                InlineKeyboardButton(text="😐 Нормально", callback_data="mood:pick:neutral"),
+            ],
+            [
+                InlineKeyboardButton(text="😔 Усталость", callback_data="mood:pick:low"),
+                InlineKeyboardButton(text="🤯 Стресс", callback_data="mood:pick:stressed"),
+            ],
+            [
+                InlineKeyboardButton(text="📈 История (7 дн)", callback_data="mood:history:7"),
+                InlineKeyboardButton(text="📈 История (30 дн)", callback_data="mood:history:30"),
+            ],
+            [InlineKeyboardButton(text="🏠 Меню", callback_data="menu:main")],
+        ]
+    )
+    return text, keyboard
+
+
+def _mood_energy_keyboard(mood: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="⚡️ Много сил (3)", callback_data=f"mood:set:{mood}:3"),
+                InlineKeyboardButton(text="🔋 В норме (2)", callback_data=f"mood:set:{mood}:2"),
+                InlineKeyboardButton(text="🪫 Мало сил (1)", callback_data=f"mood:set:{mood}:1"),
+            ],
+            [
+                InlineKeyboardButton(text="⬅️ Назад", callback_data="mood:menu"),
+                InlineKeyboardButton(text="🏠 Меню", callback_data="menu:main"),
+            ],
+        ]
+    )
+
+
+def _mood_recorded_keyboard(state_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="✍️ Добавить заметку / мысли", callback_data=f"mood:note:{state_id}")],
+            [
+                InlineKeyboardButton(text="🧘 Подобрать задачу", callback_data="now:menu"),
+                InlineKeyboardButton(text="📈 История", callback_data="mood:history:7"),
+            ],
+            [InlineKeyboardButton(text="🏠 Меню", callback_data="menu:main")],
+        ]
+    )
+
+
+@router.message(Command("mood", "state"), StateFilter("*"))
+async def cmd_mood(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    text, keyboard = await _mood_menu_payload()
+    await send_long(message.bot, message.chat.id, text, keyboard)
+
+
+@router.callback_query(F.data == "mood:menu")
+async def cb_mood_menu(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    await callback.answer()
+    text, keyboard = await _mood_menu_payload()
+    await safe_edit(callback, text, keyboard)
+
+
+@router.callback_query(F.data.startswith("mood:pick:"))
+async def cb_mood_pick(callback: CallbackQuery) -> None:
+    mood = callback.data.split(":")[2]
+    await callback.answer()
+    m_name = mood_name(mood)
+    m_icon = mood_icon(mood)
+    text = (
+        f"🌿 Настроение: {m_icon} <b>{m_name}</b>\n\n"
+        "А как дела с запасом энергии и сил?"
+    )
+    await safe_edit(callback, text, _mood_energy_keyboard(mood))
+
+
+@router.callback_query(F.data.startswith("mood:set:"))
+async def cb_mood_set(callback: CallbackQuery) -> None:
+    parts = callback.data.split(":")
+    mood = parts[2]
+    energy = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 2
+    stress = 2 if mood == "stressed" else (1 if mood == "low" else 0)
+    state_id = await db().create_user_state(
+        mood=mood, energy=energy, stress=stress, source="manual"
+    )
+    await callback.answer("Состояние зафиксировано!")
+    row = await db().get_user_state(state_id)
+    card = format_mood_card(row) if row else "✅ Состояние успешно сохранено!"
+    text = (
+        f"✅ <b>Зафиксировано!</b>\n\n{card}\n\n"
+        "Можешь добавить короткую мысль или рефлексию, либо перейти к задачам."
+    )
+    await safe_edit(callback, text, _mood_recorded_keyboard(state_id))
+
+
+@router.callback_query(F.data.startswith("mood:quick:"))
+async def cb_mood_quick(callback: CallbackQuery) -> None:
+    mood = callback.data.split(":")[2]
+    energy = 3 if mood == "great" else (1 if mood in ("low", "stressed") else 2)
+    stress = 2 if mood == "stressed" else (1 if mood == "low" else 0)
+    state_id = await db().create_user_state(
+        mood=mood, energy=energy, stress=stress, source="quick"
+    )
+    await callback.answer("Спасибо за отметку! Записал.")
+    row = await db().get_user_state(state_id)
+    card = format_mood_card(row) if row else "✅ Состояние сохранено!"
+    await safe_edit(
+        callback,
+        f"✅ <b>Отметка принята!</b>\n\n{card}",
+        _mood_recorded_keyboard(state_id),
+    )
+
+
+@router.callback_query(F.data.startswith("mood:note:"))
+async def cb_mood_note(callback: CallbackQuery, state: FSMContext) -> None:
+    state_id = int(callback.data.split(":")[2])
+    await state.set_state(ViewStates.mood_note)
+    await state.update_data(mood_state_id=state_id)
+    await callback.answer()
+    cancel_kb = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="✖️ Отмена", callback_data="mood:menu")]]
+    )
+    await safe_edit(
+        callback,
+        "✍️ <b>Добавление заметки / рефлексии</b>\n\n"
+        "Напиши текстом или отправь голосовое сообщение: что произошло, почему такое самочувствие, какие мысли.\n"
+        "Я сохраню это в дневник состояния.",
+        cancel_kb,
+    )
+
+
+@router.message(ViewStates.mood_note, F.text & ~F.text.startswith("/"))
+async def mood_note_text(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    if not text:
+        return
+    data = await state.get_data()
+    state_id = int(data.get("mood_state_id", 0))
+    await state.clear()
+    if state_id:
+        await db().update_user_state(state_id, note=text)
+    row = await db().get_user_state(state_id)
+    card = format_mood_card(row) if row else "✅ Сохранено!"
+    await message.answer(
+        f"📝 <b>Заметка сохранена!</b>\n\n{card}",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="📈 История", callback_data="mood:history:7")],
+                [InlineKeyboardButton(text="🏠 Меню", callback_data="menu:main")],
+            ]
+        ),
+    )
+
+
+@router.message(ViewStates.mood_note, F.voice)
+async def mood_note_voice(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    state_id = int(data.get("mood_state_id", 0))
+    await state.clear()
+    note_text = ""
+    try:
+        from ..stt_whisper import whisper
+        import io
+        buf = io.BytesIO()
+        await message.bot.download(message.voice, destination=buf)
+        transcription = await whisper.transcribe(buf.getvalue(), suffix=".ogg")
+        if transcription:
+            note_text = transcription.strip()
+    except Exception as exc:
+        log.warning("Mood note transcription failed: %s", exc)
+
+    if not note_text:
+        note_text = (message.caption or "").strip() or "(голосовая заметка)"
+
+    if state_id:
+        await db().update_user_state(state_id, note=note_text)
+    row = await db().get_user_state(state_id)
+    card = format_mood_card(row) if row else "✅ Сохранено!"
+    await message.answer(
+        f"🎤 <b>Голосовая заметка сохранена!</b>\n\n{card}",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="📈 История", callback_data="mood:history:7")],
+                [InlineKeyboardButton(text="🏠 Меню", callback_data="menu:main")],
+            ]
+        ),
+    )
+
+
+@router.callback_query(F.data.startswith("mood:history:"))
+async def cb_mood_history(callback: CallbackQuery) -> None:
+    days_str = callback.data.split(":")[2]
+    days = int(days_str) if days_str.isdigit() else 7
+    states = await db().list_user_states(limit=25, days=days)
+    stats = await db().get_state_stats(days=days)
+    text = format_mood_history(states, stats, days=days)
+    other_days = 30 if days == 7 else 7
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=f"📈 Показать за {other_days} дней", callback_data=f"mood:history:{other_days}")],
+            [
+                InlineKeyboardButton(text="🌿 Отметиться", callback_data="mood:menu"),
+                InlineKeyboardButton(text="🏠 Меню", callback_data="menu:main"),
+            ],
+        ]
+    )
+    await callback.answer()
+    await safe_edit(callback, text, keyboard)
+
